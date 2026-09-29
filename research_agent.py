@@ -4,6 +4,25 @@ from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import tool
 from ddgs import DDGS
 
+# --- Workaround for a known CrewAI bug ---
+# CrewAI tags messages with an internal "cache_breakpoint" key meant only for
+# Anthropic models. Groq (and other non-Anthropic providers) reject it with:
+# "property 'cache_breakpoint' is unsupported". This patch makes that marker
+# a no-op so the key is never added. Safe to remove once CrewAI ships an
+# official fix.
+try:
+    import crewai.llms.cache as _crewai_cache
+
+    def _noop_mark_cache_breakpoint(message):
+        return message
+
+    _crewai_cache.mark_cache_breakpoint = _noop_mark_cache_breakpoint
+
+    import crewai.agents.crew_agent_executor as _crew_agent_executor
+    _crew_agent_executor.mark_cache_breakpoint = _noop_mark_cache_breakpoint
+except Exception:
+    pass  # if CrewAI's internals changed, fail silently and let the app run
+
 
 # ---------- 1. Search tool (DuckDuckGo, free, no API key) ----------
 @tool("DuckDuckGo Search")
