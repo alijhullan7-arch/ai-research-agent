@@ -1,5 +1,7 @@
 import os
 
+import requests
+from bs4 import BeautifulSoup
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import tool
 from ddgs import DDGS
@@ -41,9 +43,30 @@ def search_web(query: str) -> str:
     for r in results:
         title = r.get("title", "")
         link = r.get("href", "")
-        body = r.get("body", "")[:300]  # keep it short (Groq free tier has token limits)
+        body = r.get("body", "")[:200]  # keep it short (Groq free tier has token limits)
         lines.append(f"- {title}\n  {link}\n  {body}")
     return "\n".join(lines)
+
+
+# ---------- 1b. Webpage reader tool (so the agent has a real way to "open" a link) ----------
+@tool("Read Webpage")
+def read_webpage(url: str) -> str:
+    """Fetch a webpage and return its main text content. Input must be a full
+    URL starting with http:// or https:// (for example one returned by the
+    DuckDuckGo Search tool)."""
+    try:
+        resp = requests.get(
+            url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        return f"Could not open this page: {e}"
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+    return text[:1500]  # keep it short for Groq's free-tier token limits
 
 
 # ---------- 2. Main function called by the Streamlit app ----------
@@ -55,18 +78,21 @@ def run_research(topic: str, groq_api_key: str) -> str:
         model="groq/openai/gpt-oss-120b",
         api_key=groq_api_key,
         temperature=0.3,
-        max_tokens=4000,
+        max_tokens=1500,
     )
 
     researcher = Agent(
         role="Senior Research Analyst",
         goal="Research the topic '{topic}' using web search and write a clear, accurate report.",
         backstory=(
-            "You are an experienced research analyst. You search the web, "
-            "compare sources, and write well-structured reports. "
+            "You are an experienced research analyst. "
+            "You have exactly two tools available: 'DuckDuckGo Search' to find "
+            "results, and 'Read Webpage' to open a specific URL and read its "
+            "full content. Never call any other tool (for example 'open_file' "
+            "or a browser) — those do not exist and will fail. "
             "You never invent facts and always mention your sources."
         ),
-        tools=[search_web],
+        tools=[search_web, read_webpage],
         llm=llm,
         max_iter=6,          # limit search/think loops
         allow_delegation=False,
@@ -77,6 +103,9 @@ def run_research(topic: str, groq_api_key: str) -> str:
         description=(
             "Research the topic: {topic}\n"
             "Use the search tool 3 to 5 times with different queries. "
+            "Optionally use 'Read Webpage' on 1-2 of the most relevant links "
+            "to get more detail. Do not call any tool other than "
+            "'DuckDuckGo Search' and 'Read Webpage'. "
             "Then write a detailed report based only on what you found."
         ),
         expected_output=(
